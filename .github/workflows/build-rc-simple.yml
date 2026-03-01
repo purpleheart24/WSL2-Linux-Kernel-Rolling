@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       rc_version:
-        description: 'RC version to build (e.g., 6.8-rc5)'
+        description: 'RC version to build (e.g., 7.0-rc1)'
         required: true
-        default: '6.8-rc5'
+        default: '7.0-rc1'
 
 jobs:
   build-x86:
