@@ -1,0 +1,55 @@
+name: Hourly Task Checker
+
+on:
+  schedule:
+    # 每小时运行一次
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check-tasks:
+    name: Check Pending Tasks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for incomplete tasks
+        id: check
+        run: |
+          echo "Checking for pending tasks..."
+          
+          # 检查是否有失败的 workflow run
+          PENDING=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=10&status=action_required" | \
+            grep -c '"status":"action_required"' || echo "0")
+          
+          # 检查是否有正在进行的任务
+          IN_PROGRESS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=10&status=in_progress" | \
+            grep -c '"status":"in_progress"' || echo "0")
+          
+          echo "pending_count=$PENDING" >> $GITHUB_OUTPUT
+          echo "in_progress_count=$IN_PROGRESS" >> $GITHUB_OUTPUT
+          
+          if [ "$PENDING" -gt 0 ] || [ "$IN_PROGRESS" -gt 0 ]; then
+            echo "has_pending=true" >> $GITHUB_OUTPUT
+            echo "✅ Found pending tasks: $PENDING pending, $IN_PROGRESS in progress"
+          else
+            echo "has_pending=false" >> $GITHUB_OUTPUT
+            echo "✅ No pending tasks found"
+          fi
+
+      - name: Notify if pending tasks
+        if: steps.check.outputs.has_pending == 'true'
+        run: |
+          echo "📋 Pending tasks detected!"
+          echo "- Action required: ${{ steps.check.outputs.pending_count }}"
+          echo "- In progress: ${{ steps.check.outputs.in_progress_count }}"
+          echo ""
+          echo "Check: https://github.com/${{ github.repository }}/actions"
+
+      - name: No action needed
+        if: steps.check.outputs.has_pending == 'false'
+        run: |
+          echo "✅ No pending tasks. Waiting for next check..."
