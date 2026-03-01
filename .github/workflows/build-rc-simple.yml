@@ -35,14 +35,13 @@ jobs:
             git \
             curl
 
-      - name: Clone Stable Kernel (for configs)
+      - name: Clone Microsoft WSL2 Kernel (for configs)
         run: |
-          echo "Cloning stable kernel for WSL2 configs..."
-          git clone https://github.com/Nevuly/WSL2-Linux-Kernel-Rolling.git --depth 1 stable-kernel
+          echo "Cloning Microsoft WSL2 kernel for WSL2 configs..."
+          git clone https://github.com/microsoft/WSL2-Linux-Kernel.git --depth 1 --branch linux-msft-wsl-6.1.y wsl2-microsoft
           echo "Available config files:"
-          find stable-kernel -name "config-wsl*" -type f 2>/dev/null || echo "No config files found!"
-          ls -la stable-kernel/arch/x86/configs/ 2>/dev/null || echo "x86 configs dir not found"
-          ls -la stable-kernel/arch/arm64/configs/ 2>/dev/null || echo "arm64 configs dir not found"
+          find wsl2-microsoft -name "*wsl*" -type f 2>/dev/null | head -20 || echo "No wsl config files found!"
+          ls -la wsl2-microsoft/Microsoft/config-wsl/ 2>/dev/null || echo "Microsoft config-wsl dir not found"
 
       - name: Clone Linux Mainline RC Kernel
         run: |
@@ -58,25 +57,31 @@ jobs:
           # 复制 WSL2 配置文件
           echo "Copying WSL2 configuration files..."
           echo "Source files:"
-          ls -la stable-kernel/arch/x86/configs/config-wsl* 2>/dev/null || echo "No x86 configs found!"
+          ls -la wsl2-microsoft/Microsoft/config-wsl/ 2>/dev/null || echo "No Microsoft configs found!"
           
-          if [ -f "stable-kernel/arch/x86/configs/config-wsl-x86" ]; then
-            cp stable-kernel/arch/x86/configs/config-wsl-x86 linux-rc/arch/x86/configs/
-            echo "✓ Copied config-wsl-x86"
+          # 复制微软的 WSL2 配置文件
+          if [ -d "wsl2-microsoft/Microsoft/config-wsl" ]; then
+            cp -r wsl2-microsoft/Microsoft/config-wsl/* linux-rc/Microsoft/config-wsl/ 2>/dev/null || {
+              mkdir -p linux-rc/Microsoft/config-wsl
+              cp -r wsl2-microsoft/Microsoft/config-wsl/* linux-rc/Microsoft/config-wsl/
+            }
+            echo "✓ Copied Microsoft WSL2 configs"
           else
-            echo "✗ Error: config-wsl-x86 not found!"
-            exit 1
+            echo "✗ Warning: Microsoft config-wsl not found"
           fi
           
-          if [ -f "stable-kernel/arch/x86/configs/config-wsl-x86-rt" ]; then
-            cp stable-kernel/arch/x86/configs/config-wsl-x86-rt linux-rc/arch/x86/configs/
-            echo "✓ Copied config-wsl-x86-rt"
+          # 创建 x86 配置文件（基于微软配置）
+          if [ -f "wsl2-microsoft/Microsoft/config-wsl/config" ]; then
+            cp wsl2-microsoft/Microsoft/config-wsl/config linux-rc/arch/x86/configs/config-wsl-x86
+            echo "✓ Created config-wsl-x86 from Microsoft config"
           else
-            echo "✗ Warning: config-wsl-x86-rt not found"
+            echo "✗ Error: Microsoft base config not found!"
+            exit 1
           fi
           
           echo "Verifying copied files:"
           ls -la linux-rc/arch/x86/configs/config-wsl* 2>/dev/null || echo "No files copied!"
+          ls -la linux-rc/Microsoft/config-wsl/ 2>/dev/null || echo "Microsoft dir not found"
           
           echo "Available configs:"
           ls linux-rc/arch/x86/configs/config-wsl* 2>/dev/null || echo "No WSL2 configs found!"
