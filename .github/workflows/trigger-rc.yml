@@ -1,0 +1,75 @@
+name: Trigger RC Kernel Build
+
+on:
+  schedule:
+    # 每天 UTC 时间 00:00 检查新版本
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      rc_version:
+        description: 'Specific RC version to build (e.g., 6.8-rc5, leave empty for latest)'
+        required: false
+        default: ''
+
+jobs:
+  check-new-rc:
+    name: Check for New RC Version
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.SHOULD_BUILD }}
+      rc_version: ${{ steps.check.outputs.RC_VERSION }}
+      previous_version: ${{ steps.check.outputs.PREVIOUS_VERSION }}
+    steps:
+      - name: Get Latest RC Version
+        id: check
+        run: |
+          # 获取最新 RC 版本
+          if [ -n "${{ github.event.inputs.rc_version }}" ]; then
+            RC_VERSION="${{ github.event.inputs.rc_version }}"
+            echo "Using specified RC version: $RC_VERSION"
+            echo "SHOULD_BUILD=true" >> $GITHUB_OUTPUT
+          else
+            # 从 kernel.org 获取最新 RC 版本
+            RC_VERSION=$(curl -s https://www.kernel.org/ | grep -oP 'latest/mainline/v\K[0-9]+\.[0-9]+-rc[0-9]+' | head -1)
+            
+            if [ -z "$RC_VERSION" ]; then
+              # 备用方法：从 git.kernel.org 获取
+              RC_VERSION=$(curl -s https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/refs/ | grep -oP 'tags/\Kv[0-9]+\.[0-9]+-rc[0-9]+' | head -1 | sed 's/^v//')
+            fi
+            
+            if [ -z "$RC_VERSION" ]; then
+              echo "::warning::Failed to fetch RC version, using fallback"
+              RC_VERSION="6.8-rc5"
+            fi
+            
+            echo "Latest RC Version: $RC_VERSION"
+          fi
+          
+          echo "RC_VERSION=$RC_VERSION" >> $GITHUB_OUTPUT
+          echo "SHOULD_BUILD=true" >> $GITHUB_OUTPUT
+
+  trigger-build:
+    name: Trigger RC Build
+    uses: ./.github/workflows/build-rc.yml
+    needs: check-new-rc
+    if: ${{ needs.check-new-rc.outputs.should_build == 'true' }}
+    with:
+      rc_version: ${{ needs.check-new-rc.outputs.rc_version }}
+      build_zfs: ${{ github.event.inputs.build_zfs || false }}
+
+  notify:
+    name: Notify Result
+    runs-on: ubuntu-latest
+    needs: [check-new-rc, trigger-build]
+    if: always() && needs.check-new-rc.outputs.should_build == 'true'
+    steps:
+      - name: Notify Success
+        if: ${{ needs.trigger-build.result == 'success' }}
+        run: |
+          echo "✅ Successfully built RC ${{ needs.check-new-rc.outputs.rc_version }}"
+          
+      - name: Notify Failure
+        if: ${{ needs.trigger-build.result == 'failure' }}
+        run: |
+          echo "❌ Failed to build RC ${{ needs.check-new-rc.outputs.rc_version }}"
+          exit 1

@@ -1,39 +1,56 @@
-name: Stable Kernel CI Build Core
+name: Mainline RC Kernel CI Build
 
 on:
-  workflow_call:
+  schedule:
+    # 每天 UTC 时间 00:00 运行
+    - cron: '0 0 * * *'
+  workflow_dispatch:
     inputs:
-      tag_name:
-        required: true
-        type: string
-      build_zfs:
+      rc_version:
+        description: 'Specific RC version to build (e.g., 6.8-rc5, leave empty for latest)'
         required: false
-        type: boolean
-        default: false
-      is_normal_build:
-        required: false
-        type: boolean
-        default: false
-      kernel_source:
-        required: false
-        type: string
-        default: 'stable'
-        description: 'Kernel source: stable, mainline, or rc'
-      kernel_repo:
-        required: false
-        type: string
-        default: 'https://github.com/Nevuly/WSL2-Linux-Kernel-Rolling.git'
-        description: 'Kernel git repository URL'
-      kernel_branch:
-        required: false
-        type: string
         default: ''
-        description: 'Kernel git branch or tag'
+      build_zfs:
+        description: 'Build ZFS modules'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
+  get-latest-rc:
+    name: Get Latest RC Version
+    runs-on: ubuntu-latest
+    outputs:
+      rc_version: ${{ steps.get-rc.outputs.RC_VERSION }}
+      rc_tag: ${{ steps.get-rc.outputs.RC_TAG }}
+    steps:
+      - name: Get Latest Mainline RC Version
+        id: get-rc
+        run: |
+          # 如果用户指定了版本，使用指定的版本
+          if [ -n "${{ github.event.inputs.rc_version }}" ]; then
+            RC_VERSION="${{ github.event.inputs.rc_version }}"
+          else
+            # 从 kernel.org 获取最新 RC 版本
+            RC_VERSION=$(curl -s https://www.kernel.org/ | grep -oP 'latest/mainline/v\K[0-9]+\.[0-9]+-rc[0-9]+' | head -1)
+            if [ -z "$RC_VERSION" ]; then
+              # 备用方法：从 git.kernel.org 获取
+              RC_VERSION=$(curl -s https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/refs/ | grep -oP 'refs/heads/\Kv[0-9]+\.[0-9]+-rc[0-9]+' | head -1 | sed 's/^v//')
+            fi
+            if [ -z "$RC_VERSION" ]; then
+              echo "Failed to fetch latest RC version, using fallback"
+              RC_VERSION="6.8-rc5"
+            fi
+          fi
+          
+          echo "Latest RC Version: $RC_VERSION"
+          echo "RC_VERSION=$RC_VERSION" >> $GITHUB_OUTPUT
+          echo "RC_TAG=v$RC_VERSION" >> $GITHUB_OUTPUT
+
   build:
     name: ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
+    needs: get-latest-rc
     container:
       image: nevuly/nevuly-dev-base:build
       options: --privileged
@@ -72,13 +89,63 @@ jobs:
         with:
           ref: master
 
-      - name: Download WSL2 Stable Kernel
+      - name: Download WSL2 Configuration Files
         run: |
-          git clone https://github.com/Nevuly/WSL2-Linux-Kernel-Rolling.git --depth 1 -b ${{ inputs.tag_name }} linux
+          echo "Cloning original Nevuly repository for WSL2 configuration files..."
+          git clone https://github.com/Nevuly/WSL2-Linux-Kernel-Rolling.git --depth 1 wsl2-configs
+          echo "Configuration files available:"
+          ls -la wsl2-configs/arch/x86/configs/config-wsl* 2>/dev/null || echo "No x86 configs found"
+          ls -la wsl2-configs/arch/arm64/configs/config-wsl* 2>/dev/null || echo "No arm64 configs found"
 
-      - name: Build WSL2 Stable Kernel
+      - name: Download Linux Mainline RC Kernel
         run: |
-          cd linux
+          RC_VERSION="${{ needs.get-latest-rc.outputs.rc_version }}"
+          echo "Building Linux Mainline RC Kernel: $RC_VERSION"
+          
+          # 克隆官方 mainline 内核仓库
+          echo "Cloning Linux Mainline RC $RC_VERSION..."
+          git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git --depth 1 --branch v$RC_VERSION linux-rc || {
+            echo "Failed to clone from git.kernel.org, trying GitHub mirror..."
+            git clone https://github.com/torvalds/linux.git --depth 1 --branch v$RC_VERSION linux-rc
+          }
+          
+          # 复制 WSL2 配置文件到 RC 内核
+          echo "Copying WSL2 configuration files..."
+          if [ -f "wsl2-configs/arch/x86/configs/config-wsl-x86" ]; then
+            cp wsl2-configs/arch/x86/configs/config-wsl-x86 linux-rc/arch/x86/configs/
+            echo "✓ Copied config-wsl-x86"
+          else
+            echo "✗ config-wsl-x86 not found!"
+          fi
+          
+          if [ -f "wsl2-configs/arch/x86/configs/config-wsl-x86-rt" ]; then
+            cp wsl2-configs/arch/x86/configs/config-wsl-x86-rt linux-rc/arch/x86/configs/
+            echo "✓ Copied config-wsl-x86-rt"
+          else
+            echo "✗ config-wsl-x86-rt not found!"
+          fi
+          
+          if [ -f "wsl2-configs/arch/arm64/configs/config-wsl-arm64" ]; then
+            cp wsl2-configs/arch/arm64/configs/config-wsl-arm64 linux-rc/arch/arm64/configs/
+            echo "✓ Copied config-wsl-arm64"
+          else
+            echo "✗ config-wsl-arm64 not found!"
+          fi
+          
+          if [ -f "wsl2-configs/arch/arm64/configs/config-wsl-arm64-rt" ]; then
+            cp wsl2-configs/arch/arm64/configs/config-wsl-arm64-rt linux-rc/arch/arm64/configs/
+            echo "✓ Copied config-wsl-arm64-rt"
+          else
+            echo "✗ config-wsl-arm64-rt not found!"
+          fi
+          
+          echo "Verifying copied files:"
+          ls -la linux-rc/arch/x86/configs/config-wsl* 2>/dev/null || true
+          ls -la linux-rc/arch/arm64/configs/config-wsl* 2>/dev/null || true
+
+      - name: Build WSL2 RC Kernel
+        run: |
+          cd linux-rc
           if [ ${{ matrix.arch }} == "x86" ]
           then
           make KCONFIG_CONFIG=arch/x86/configs/config-wsl-x86 -j$(echo `nproc` + 1 | bc)
@@ -98,26 +165,39 @@ jobs:
 
       - name: Generate Kernel Modules
         run: |
-          cd linux
-          IFS=- read -r var1 var2 var3 version <<< ${{ inputs.tag_name }}
+          cd linux-rc
+          RC_VERSION="${{ needs.get-latest-rc.outputs.rc_version }}"
           mkdir -p ${{ matrix.image-name }}-addon_install && make modules_install INSTALL_MOD_PATH=${{ matrix.image-name }}-addon_install
+          
+          # 获取实际的内核版本字符串
+          KERNEL_VER=$(ls lib/modules/ | head -1)
+          echo "Kernel version from build: $KERNEL_VER"
+          
+          # 重命名模块目录为 WSL2 RC 格式
           if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "arm64" ]
           then
-          rm -rf ${{ matrix.image-name }}-addon_install/lib/modules/$version-WSL2-STABLE+/build
+            mv lib/modules/$KERNEL_VER lib/modules/$RC_VERSION-WSL2-RC+ 2>/dev/null || true
           else
-          rm -rf ${{ matrix.image-name }}-addon_install/lib/modules/$version-WSL2-RT-STABLE+/build
+            mv lib/modules/$KERNEL_VER lib/modules/$RC_VERSION-WSL2-RT-RC+ 2>/dev/null || true
           fi
 
       - name: Generate Kernel Headers and Documents
         run: |
-          cd linux
-          IFS=- read -r var1 var2 var3 version <<< ${{ inputs.tag_name }}
+          cd linux-rc
+          RC_VERSION="${{ needs.get-latest-rc.outputs.rc_version }}"
+          
+          # 确定模块目录路径
           if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "arm64" ]
           then
-          export addon_path=${{ matrix.image-name }}-addon_install/lib/modules/$version-WSL2-STABLE+/build
+          export addon_path=${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RC+/build
+          MODULE_SUFFIX="$RC_VERSION-WSL2-RC+"
           else
-          export addon_path=${{ matrix.image-name }}-addon_install/lib/modules/$version-WSL2-RT-STABLE+/build
+          export addon_path=${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RT-RC+/build
+          MODULE_SUFFIX="$RC_VERSION-WSL2-RT-RC+"
           fi
+          
+          echo "Addon path: $addon_path"
+          ls -la ${{ matrix.image-name }}-addon_install/lib/modules/
           mkdir -p $addon_path
           install -Dt "$addon_path" -m644 Makefile Module.symvers System.map vmlinux
           install -Dt "$addon_path/kernel" -m644 kernel/Makefile
@@ -194,47 +274,50 @@ jobs:
           cp -r Documentation $addon_path/Documentation
           if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "arm64" ]
           then
-          rm -rf ${{ matrix.image-name }}-addon_install/lib/modules/$version-WSL2-STABLE+/build/${{ matrix.image-name }}-addon_install
+          rm -rf ${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RC+/build/${{ matrix.image-name }}-addon_install
           else
-          rm -rf ${{ matrix.image-name }}-addon_install/lib/modules/$version-WSL2-RT-STABLE+/build/${{ matrix.image-name }}-addon_install
+          rm -rf ${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RT-RC+/build/${{ matrix.image-name }}-addon_install
           fi
 
       - name: Download ZFS
-        if: ${{ inputs.build_zfs }}
+        if: ${{ github.event.inputs.build_zfs == 'true' }}
         run: |
           git clone https://github.com/openzfs/zfs.git --depth 1 zfs
 
       - name: Build ZFS
-        if: ${{ inputs.build_zfs }}
+        if: ${{ github.event.inputs.build_zfs == 'true' }}
         run: |
           cd zfs
           ./autogen.sh
-          ./configure --with-linux="$(pwd)/../linux" --with-linux-obj="$(pwd)/../linux"
+          ./configure --with-linux="$(pwd)/../linux-rc" --with-linux-obj="$(pwd)/../linux-rc"
           make -j$(echo `nproc` + 1 | bc)
 
       - name: Generate ZFS Kernel Module
-        if: ${{ inputs.build_zfs }}
+        if: ${{ github.event.inputs.build_zfs == 'true' }}
         run: |
-          IFS=- read -r var1 var2 var3 version <<< ${{ inputs.tag_name }}
+          RC_VERSION="${{ needs.get-latest-rc.outputs.rc_version }}"
           if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "arm64" ]
           then
-          mkdir -p linux/${{ matrix.image-name }}-addon_install/lib/modules/$version-WSL2-STABLE+/extra
-          find zfs/module -name "*.ko" -exec cp {} linux/${{ matrix.image-name }}-addon_install/lib/modules/$version-WSL2-STABLE+/extra \;
+          mkdir -p linux-rc/${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RC+/extra
+          find zfs/module -name "*.ko" -exec cp {} linux-rc/${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RC+/extra \;
           else
-          mkdir -p linux/${{ matrix.image-name }}-addon_install/lib/modules/$version-WSL2-RT-STABLE+/extra
-          find zfs/module -name "*.ko" -exec cp {} linux/${{ matrix.image-name }}-addon_install/lib/modules/$version-WSL2-RT-STABLE+/extra \;
+          mkdir -p linux-rc/${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RT-RC+/extra
+          find zfs/module -name "*.ko" -exec cp {} linux-rc/${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RT-RC+/extra \;
           fi
 
       - name: Generate Kernel Addon Package
         run: |
-          IFS=- read -r var1 var2 var3 version <<< ${{ inputs.tag_name }}
-          cd linux
+          RC_VERSION="${{ needs.get-latest-rc.outputs.rc_version }}"
+          cd linux-rc
           if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "arm64" ]
           then
-          sudo ../.github/scripts/gen_modules_vhdx.sh "$PWD/${{ matrix.image-name }}-addon_install/" "$version-WSL2-STABLE+" ${{ matrix.image-name }}-addon.vhdx
+          MODULE_VER="$RC_VERSION-WSL2-RC+"
           else
-          sudo ../.github/scripts/gen_modules_vhdx.sh "$PWD/${{ matrix.image-name }}-addon_install/" "$version-WSL2-RT-STABLE+" ${{ matrix.image-name }}-addon.vhdx
+          MODULE_VER="$RC_VERSION-WSL2-RT-RC+"
           fi
+          echo "Generating VHDX for version: $MODULE_VER"
+          ls -la ${{ matrix.image-name }}-addon_install/lib/modules/
+          sudo ../.github/scripts/gen_modules_vhdx.sh "$PWD/${{ matrix.image-name }}-addon_install/" "$MODULE_VER" ${{ matrix.image-name }}-addon.vhdx
           mv ${{ matrix.image-name }}-addon.vhdx ../
 
       - name: Generate SHA-256 Checksum
@@ -268,16 +351,15 @@ jobs:
       - name: Upload Kernel Images
         uses: actions/upload-artifact@main
         with:
-          name: ${{ matrix.image-name }}
+          name: ${{ matrix.image-name }}-rc-${{ needs.get-latest-rc.outputs.rc_version }}
           path: |
             ${{ matrix.image-name }}
             ${{ matrix.image-name }}-addon.vhdx
 
   release:
-    name: Release
+    name: Release RC Kernel
     runs-on: ubuntu-latest
-    needs: build
-    if: ${{ inputs.is_normal_build }}
+    needs: [build, get-latest-rc]
     env:
       X86_IMAGE_SHA: ${{ needs.build.outputs.X86_IMAGE_SHA }}
       X86_ADDON_SHA: ${{ needs.build.outputs.X86_ADDON_SHA }}
@@ -287,6 +369,7 @@ jobs:
       ARM64_ADDON_SHA: ${{ needs.build.outputs.ARM64_ADDON_SHA }}
       ARM64_RT_IMAGE_SHA: ${{ needs.build.outputs.ARM64_RT_IMAGE_SHA }}
       ARM64_RT_ADDON_SHA: ${{ needs.build.outputs.ARM64_RT_ADDON_SHA }}
+      RC_VERSION: ${{ needs.get-latest-rc.outputs.rc_version }}
 
     steps:
       - uses: actions/checkout@main
@@ -294,16 +377,29 @@ jobs:
         with:
           path: release_images/
 
-      - name: Release Stable Kernel
+      - name: Create Release
         uses: softprops/action-gh-release@master
         with:
-          name: ${{ inputs.tag_name }}
-          tag_name: ${{ inputs.tag_name }}
+          name: Linux Mainline RC ${{ env.RC_VERSION }} (WSL2)
+          tag_name: rc-${{ env.RC_VERSION }}
+          prerelease: true
           body: |
             > [!WARNING]
+            > ⚠️ **This is a PRE-RELEASE kernel built from Linux Mainline RC source!**
+            > 
+            > - This kernel is built from the latest Linux Mainline Release Candidate
+            > - It may contain bugs and instability issues
+            > - NOT recommended for production use
+            > - For testing and development purposes only
+            >
             > ARM64 kernel has not been tested!
             >
             > If you have any issues, please leave an issue on the [issue tab](https://github.com/Nevuly/WSL2-Rolling-Kernel-Issue/issues)!
+
+            ### **Build Information**
+            - **Kernel Version**: ${{ env.RC_VERSION }}
+            - **Source**: [Linux Mainline Git](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git)
+            - **Build Type**: Release Candidate (RC)
 
             ### **Hash Information**
             | File Name | SHA-256 Checksum |
@@ -317,11 +413,10 @@ jobs:
             | Image-arm64-rt | ${{ env.ARM64_RT_IMAGE_SHA }} |
             | Image-arm64-rt-addon.vhdx | ${{ env.ARM64_RT_ADDON_SHA }} |
 
-            ### **How to install this kernel or kernel addon package in WSL2?**
+            ### **How to install this kernel in WSL2?**
              - Please see this [wiki](https://github.com/Nevuly/WSL2-Linux-Kernel-Rolling/wiki/Install-Instructions).
 
             **This kernel built on ArchLinux.**
-
           files: |
             release_images/*/*
           token: ${{ secrets.CUSTOM_GITHUB_TOKEN }}

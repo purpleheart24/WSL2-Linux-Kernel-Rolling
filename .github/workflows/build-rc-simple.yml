@@ -1,0 +1,94 @@
+name: Mainline RC Kernel CI Build (Debug)
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_version:
+        description: 'RC version to build (e.g., 6.8-rc5)'
+        required: true
+        default: '6.8-rc5'
+
+jobs:
+  build-x86:
+    name: Build x86_64 RC Kernel
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            bc \
+            kmod \
+            cpio \
+            xz-utils \
+            rsync \
+            qemu-utils \
+            git \
+            curl
+
+      - name: Clone Stable Kernel (for configs)
+        run: |
+          echo "Cloning stable kernel for WSL2 configs..."
+          git clone https://github.com/Nevuly/WSL2-Linux-Kernel-Rolling.git --depth 1 stable-kernel
+
+      - name: Clone Linux Mainline RC Kernel
+        run: |
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          echo "Building Linux Mainline RC Kernel: $RC_VERSION"
+          
+          # 尝试从 GitHub 镜像克隆（更快）
+          git clone https://github.com/torvalds/linux.git --depth 1 --branch v$RC_VERSION linux-rc || {
+            echo "GitHub clone failed, trying git.kernel.org..."
+            git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git --depth 1 --branch v$RC_VERSION linux-rc
+          }
+          
+          # 复制 WSL2 配置文件
+          echo "Copying WSL2 configuration files..."
+          cp stable-kernel/arch/x86/configs/config-wsl-x86 linux-rc/arch/x86/configs/ || {
+            echo "Warning: x86 config not found in stable-kernel"
+          }
+          cp stable-kernel/arch/x86/configs/config-wsl-x86-rt linux-rc/arch/x86/configs/ || true
+          
+          echo "Available configs:"
+          ls linux-rc/arch/x86/configs/config-wsl* 2>/dev/null || echo "No WSL2 configs found!"
+
+      - name: Build Kernel
+        run: |
+          cd linux-rc
+          make KCONFIG_CONFIG=arch/x86/configs/config-wsl-x86 -j$(nproc)
+          cp arch/x86/boot/bzImage ../bzImage-x86_64
+          echo "Kernel build completed!"
+          ls -lh ../bzImage-x86_64
+
+      - name: Generate Kernel Modules
+        run: |
+          cd linux-rc
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          make modules_install INSTALL_MOD_PATH=../modules_install
+          
+          # 重命名模块目录
+          KERNEL_VER=$(ls ../modules_install/lib/modules/ | head -1)
+          echo "Original kernel version: $KERNEL_VER"
+          mv ../modules_install/lib/modules/$KERNEL_VER ../modules_install/lib/modules/$RC_VERSION-WSL2-RC+
+          echo "Renamed to: $RC_VERSION-WSL2-RC+"
+
+      - name: Upload Kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzImage-x86_64-rc-${{ github.event.inputs.rc_version }}
+          path: bzImage-x86_64
+
+      - name: Upload Modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: modules-rc-${{ github.event.inputs.rc_version }}
+          path: modules_install/
