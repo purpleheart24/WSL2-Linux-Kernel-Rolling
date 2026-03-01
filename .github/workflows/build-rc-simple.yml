@@ -39,6 +39,10 @@ jobs:
         run: |
           echo "Cloning stable kernel for WSL2 configs..."
           git clone https://github.com/Nevuly/WSL2-Linux-Kernel-Rolling.git --depth 1 stable-kernel
+          echo "Available config files:"
+          find stable-kernel -name "config-wsl*" -type f 2>/dev/null || echo "No config files found!"
+          ls -la stable-kernel/arch/x86/configs/ 2>/dev/null || echo "x86 configs dir not found"
+          ls -la stable-kernel/arch/arm64/configs/ 2>/dev/null || echo "arm64 configs dir not found"
 
       - name: Clone Linux Mainline RC Kernel
         run: |
@@ -53,10 +57,26 @@ jobs:
           
           # 复制 WSL2 配置文件
           echo "Copying WSL2 configuration files..."
-          cp stable-kernel/arch/x86/configs/config-wsl-x86 linux-rc/arch/x86/configs/ || {
-            echo "Warning: x86 config not found in stable-kernel"
-          }
-          cp stable-kernel/arch/x86/configs/config-wsl-x86-rt linux-rc/arch/x86/configs/ || true
+          echo "Source files:"
+          ls -la stable-kernel/arch/x86/configs/config-wsl* 2>/dev/null || echo "No x86 configs found!"
+          
+          if [ -f "stable-kernel/arch/x86/configs/config-wsl-x86" ]; then
+            cp stable-kernel/arch/x86/configs/config-wsl-x86 linux-rc/arch/x86/configs/
+            echo "✓ Copied config-wsl-x86"
+          else
+            echo "✗ Error: config-wsl-x86 not found!"
+            exit 1
+          fi
+          
+          if [ -f "stable-kernel/arch/x86/configs/config-wsl-x86-rt" ]; then
+            cp stable-kernel/arch/x86/configs/config-wsl-x86-rt linux-rc/arch/x86/configs/
+            echo "✓ Copied config-wsl-x86-rt"
+          else
+            echo "✗ Warning: config-wsl-x86-rt not found"
+          fi
+          
+          echo "Verifying copied files:"
+          ls -la linux-rc/arch/x86/configs/config-wsl* 2>/dev/null || echo "No files copied!"
           
           echo "Available configs:"
           ls linux-rc/arch/x86/configs/config-wsl* 2>/dev/null || echo "No WSL2 configs found!"
