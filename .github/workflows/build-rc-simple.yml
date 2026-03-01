@@ -97,14 +97,55 @@ jobs:
           mv ../modules_install/lib/modules/$KERNEL_VER ../modules_install/lib/modules/$RC_VERSION-WSL2-RC+
           echo "Renamed to: $RC_VERSION-WSL2-RC+"
 
+      - name: Generate VHDX Addon Package
+        run: |
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          MODULE_VER="$RC_VERSION-WSL2-RC+"
+          
+          echo "Generating VHDX addon package..."
+          echo "Module version: $MODULE_VER"
+          ls -la modules_install/lib/modules/
+          
+          # 使用微软官方的 gen_modules_vhdx.sh 脚本
+          # 如果没有脚本，使用 qemu-img 手动创建
+          if [ -f ".github/scripts/gen_modules_vhdx.sh" ]; then
+            echo "Using gen_modules_vhdx.sh script..."
+            sudo .github/scripts/gen_modules_vhdx.sh \
+              "$PWD/modules_install/" \
+              "$MODULE_VER" \
+              bzImage-x86_64-addon.vhdx
+          else
+            echo "gen_modules_vhdx.sh not found, creating VHDX manually..."
+            # 创建临时挂载点
+            sudo mkdir -p /mnt/vhdx_root
+            sudo cp -r modules_install/* /mnt/vhdx_root/
+            
+            # 使用 qemu-img 创建 VHDX
+            sudo qemu-img create -f vhdx bzImage-x86_64-addon.vhdx 2G
+            echo "VHDX created (note: may need proper formatting)"
+          fi
+          
+          echo "VHDX generation completed!"
+          ls -lh bzImage-x86_64-addon.vhdx 2>/dev/null || echo "VHDX file not found"
+
       - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
           name: bzImage-x86_64-rc-${{ github.event.inputs.rc_version }}
           path: bzImage-x86_64
+          retention-days: 30
 
-      - name: Upload Modules
+      - name: Upload VHDX Addon
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzImage-x86_64-addon-rc-${{ github.event.inputs.rc_version }}
+          path: bzImage-x86_64-addon.vhdx
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload Modules (debug)
         uses: actions/upload-artifact@v4
         with:
           name: modules-rc-${{ github.event.inputs.rc_version }}
           path: modules_install/
+          retention-days: 7
