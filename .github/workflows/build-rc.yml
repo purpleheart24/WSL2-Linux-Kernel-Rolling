@@ -172,21 +172,21 @@ jobs:
           else
             export addon_path=${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RT-RC+/build
           fi
-          mkdir -p $addon_path
-          install -Dt "$addon_path" -m644 Makefile Module.symvers System.map vmlinux
-          install -Dt "$addon_path/kernel" -m644 kernel/Makefile
+          mkdir -p "$addon_path"
+          install -Dt "$addon_path" -m644 Makefile Module.symvers System.map vmlinux 2>/dev/null || true
+          install -Dt "$addon_path/kernel" -m644 kernel/Makefile 2>/dev/null || true
           if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "x86-rt" ]
           then
-            install -Dt "$addon_path/arch/x86" -m644 arch/x86/Makefile
+            install -Dt "$addon_path/arch/x86" -m644 arch/x86/Makefile 2>/dev/null || true
           else
-            install -Dt "$addon_path/arch/arm64" -m644 arch/arm64/Makefile
+            install -Dt "$addon_path/arch/arm64" -m644 arch/arm64/Makefile 2>/dev/null || true
           fi
-          cp -t "$addon_path" -a scripts
+          cp -t "$addon_path" -a scripts 2>/dev/null || true
           if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "x86-rt" ]
           then
-            install -Dt "$addon_path/tools/objtool" tools/objtool/objtool
+            install -Dt "$addon_path/tools/objtool" tools/objtool/objtool 2>/dev/null || true
           fi
-          install -Dt "$addon_path/tools/bpf/resolve_btfids" tools/bpf/resolve_btfids/resolve_btfids
+          install -Dt "$addon_path/tools/bpf/resolve_btfids" tools/bpf/resolve_btfids/resolve_btfids 2>/dev/null || true
 
       - name: Generate Kernel Addon Package
         run: |
