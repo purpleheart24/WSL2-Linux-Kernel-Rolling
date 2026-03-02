@@ -64,14 +64,17 @@ jobs:
             git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git --depth 1 --branch v$RC_VERSION linux-rc
           }
           
-          # 复制优化的配置文件
-          echo "Copying optimized config for Intel 258V..."
-          if [ -f "config-wsl-258v-optimized" ]; then
-            cp config-wsl-258v-optimized linux-rc/arch/x86/configs/config-wsl-258v-optimized
-            echo "✓ Copied optimized config"
+          # 复制完整的优化配置文件
+          echo "Copying complete config for Intel 258V..."
+          if [ -f "config-wsl-258v-complete" ]; then
+            cp config-wsl-258v-complete linux-rc/arch/x86/configs/config-wsl-258v-complete
+            echo "✓ Copied complete config with all WSL2 drivers"
+          elif [ -f "config-wsl-258v-optimized" ]; then
+            cp config-wsl-258v-optimized linux-rc/arch/x86/configs/config-wsl-258v-complete
+            echo "✓ Using optimized config (may be incomplete)"
           else
             # 使用微软配置作为基础
-            cp wsl2-microsoft/arch/x86/configs/config-wsl linux-rc/arch/x86/configs/config-wsl-258v-optimized
+            cp wsl2-microsoft/arch/x86/configs/config-wsl linux-rc/arch/x86/configs/config-wsl-258v-complete
             echo "✓ Using Microsoft config as base"
           fi
 
@@ -107,22 +110,10 @@ jobs:
           echo "CFLAGS: $CFLAGS"
           echo "LDFLAGS: $LDFLAGS"
           
-          # 启用 LTO 配置
+          # 使用完整配置，无需额外追加
           echo ""
-          echo "=== LTO Configuration ==="
-          echo "CONFIG_LTO_CLANG=y" >> arch/x86/configs/config-wsl-258v-optimized
-          echo "CONFIG_LTO_CLANG_THIN=y" >> arch/x86/configs/config-wsl-258v-optimized
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> arch/x86/configs/config-wsl-258v-optimized
-          echo "CONFIG_HZ_1000=y" >> arch/x86/configs/config-wsl-258v-optimized
-          echo "CONFIG_PREEMPT_VOLUNTARY=y" >> arch/x86/configs/config-wsl-258v-optimized
-          
-          # 禁用 AVX-512
-          echo ""
-          echo "=== Disabling AVX-512 (not supported on 258V) ==="
-          echo "# CONFIG_X86_5LEVEL is not set" >> arch/x86/configs/config-wsl-258v-optimized
-          echo "# CONFIG_AVX512F is not set" >> arch/x86/configs/config-wsl-258v-optimized
-          echo "# CONFIG_AVX512_VL is not set" >> arch/x86/configs/config-wsl-258v-optimized
-          
+          echo "=== Using Complete Config ==="
+          echo "All WSL2 drivers and performance optimizations included"
           echo "Configuration complete!"
 
       - name: Build Optimized Kernel
@@ -134,16 +125,16 @@ jobs:
           echo "Start time: $(date)"
           echo ""
           
-          # 使用优化的配置编译
-          make KCONFIG_CONFIG=arch/x86/configs/config-wsl-258v-optimized -j$(nproc)
+          # 使用完整的配置编译
+          make KCONFIG_CONFIG=arch/x86/configs/config-wsl-258v-complete -j$(nproc)
           
           echo ""
           echo "Build completed: $(date)"
-          cp arch/x86/boot/bzImage ../bzImage-x86_64-optimized
+          cp arch/x86/boot/bzImage ../bzImage-x86_64-complete
           
           echo ""
           echo "=== Kernel Size ==="
-          ls -lh ../bzImage-x86_64-optimized
+          ls -lh ../bzImage-x86_64-complete
 
       - name: Generate Kernel Modules
         run: |
@@ -152,39 +143,39 @@ jobs:
           make modules_install INSTALL_MOD_PATH=../modules_install
           
           KERNEL_VER=$(ls ../modules_install/lib/modules/ | head -1)
-          mv ../modules_install/lib/modules/$KERNEL_VER ../modules_install/lib/modules/$RC_VERSION-WSL2-RC-OPT+
-          echo "Modules installed: $RC_VERSION-WSL2-RC-OPT+"
+          mv ../modules_install/lib/modules/$KERNEL_VER ../modules_install/lib/modules/$RC_VERSION-WSL2-COMPLETE+
+          echo "Modules installed: $RC_VERSION-WSL2-COMPLETE+"
 
       - name: Generate VHDX Addon Package
         run: |
           RC_VERSION="${{ github.event.inputs.rc_version }}"
-          MODULE_VER="$RC_VERSION-WSL2-RC-OPT+"
+          MODULE_VER="$RC_VERSION-WSL2-COMPLETE+"
           
           echo "Generating VHDX addon package..."
           if [ -f ".github/scripts/gen_modules_vhdx.sh" ]; then
             sudo .github/scripts/gen_modules_vhdx.sh \
               "$PWD/modules_install/" \
               "$MODULE_VER" \
-              bzImage-x86_64-addon-optimized.vhdx
+              bzImage-x86_64-addon-complete.vhdx
           else
             echo "Creating minimal VHDX..."
-            sudo qemu-img create -f vhdx bzImage-x86_64-addon-optimized.vhdx 2G
+            sudo qemu-img create -f vhdx bzImage-x86_64-addon-complete.vhdx 2G
           fi
           
-          ls -lh bzImage-x86_64-addon-optimized.vhdx 2>/dev/null || echo "VHDX creation skipped"
+          ls -lh bzImage-x86_64-addon-complete.vhdx 2>/dev/null || echo "VHDX creation skipped"
 
-      - name: Upload Optimized Kernel
+      - name: Upload Complete Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: bzImage-x86_64-optimized-rc-${{ github.event.inputs.rc_version }}
-          path: bzImage-x86_64-optimized
+          name: bzImage-x86_64-complete-rc-${{ github.event.inputs.rc_version }}
+          path: bzImage-x86_64-complete
           retention-days: 30
 
-      - name: Upload VHDX Addon (Optimized)
+      - name: Upload VHDX Addon (Complete)
         uses: actions/upload-artifact@v4
         with:
-          name: bzImage-x86_64-addon-optimized-rc-${{ github.event.inputs.rc_version }}
-          path: bzImage-x86_64-addon-optimized.vhdx
+          name: bzImage-x86_64-addon-complete-rc-${{ github.event.inputs.rc_version }}
+          path: bzImage-x86_64-addon-complete.vhdx
           retention-days: 30
           if-no-files-found: ignore
 
@@ -194,15 +185,18 @@ jobs:
           OPT_LEVEL="${{ github.event.inputs.optimization_level }}"
           
           cat > build-info.txt << EOF
-          Build Information
-          =================
+          Build Information (Complete Config)
+          ====================================
           Kernel Version: $RC_VERSION
           Optimization: $OPT_LEVEL
           Target CPU: Intel Core Ultra 258V (Lunar Lake)
           Build Time: $(date)
           
-          Optimization Flags:
-          - CFLAGS: -O$OPT_LEVEL -march=alderlake -mtune=intel -flto=thin
+          Features Included:
+          - All WSL2 drivers (DXGKRNL, Hyper-V, etc.)
+          - Filesystem support (EXT4, TMPFS, 9P)
+          - Network support
+          - Namespaces and Cgroups
           - LTO: Thin LTO with Clang
           - Timer HZ: 1000
           - Preempt: Voluntary
@@ -210,6 +204,7 @@ jobs:
           Disabled Features:
           - AVX-512 (not supported on 258V)
           - 5-level page tables (not supported on 258V)
+          - Debug options (production build)
           EOF
           
           cat build-info.txt
@@ -217,6 +212,6 @@ jobs:
       - name: Upload Build Info
         uses: actions/upload-artifact@v4
         with:
-          name: build-info-optimized-rc-${{ github.event.inputs.rc_version }}
+          name: build-info-complete-rc-${{ github.event.inputs.rc_version }}
           path: build-info.txt
           retention-days: 30
