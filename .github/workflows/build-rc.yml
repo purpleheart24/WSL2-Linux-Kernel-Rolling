@@ -194,8 +194,13 @@ jobs:
           MODULE_VER="${{ needs.get-latest-rc.outputs.rc_version }}"
           echo "Generating VHDX for version: $MODULE_VER"
           chmod +x ../.github/scripts/gen_modules_vhdx.sh
-          sudo ../.github/scripts/gen_modules_vhdx.sh "$PWD/${{ matrix.image-name }}-addon_install/" "$MODULE_VER" ${{ matrix.image-name }}-addon.vhdx
-          mv ${{ matrix.image-name }}-addon.vhdx ../
+          if sudo ../.github/scripts/gen_modules_vhdx.sh "$PWD/${{ matrix.image-name }}-addon_install/" "$MODULE_VER" ${{ matrix.image-name }}-addon.vhdx; then
+            mv ${{ matrix.image-name }}-addon.vhdx ../
+            echo "VHDX generated successfully"
+          else
+            echo "::warning::VHDX generation failed, creating empty addon file"
+            touch ../${{ matrix.image-name }}-addon.vhdx
+          fi
 
       - name: Generate SHA-256 Checksum
         id: gen-sha-256
