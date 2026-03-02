@@ -1,0 +1,149 @@
+name: Mainline RC Kernel CI Build (Simple)
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_version:
+        description: 'RC version to build (e.g., 7.0-rc2)'
+        required: true
+        default: '7.0-rc2'
+
+jobs:
+  build-x86:
+    name: Build x86_64 RC Kernel
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            bc \
+            kmod \
+            cpio \
+            xz-utils \
+            rsync \
+            qemu-utils \
+            git \
+            curl
+
+      - name: Clone Microsoft WSL2 Kernel (for configs)
+        run: |
+          echo "Cloning Microsoft WSL2 kernel for WSL2 configs..."
+          git clone https://github.com/microsoft/WSL2-Linux-Kernel.git --depth 1 --branch linux-msft-wsl-6.1.y wsl2-microsoft
+          echo "Available config files:"
+          ls -la wsl2-microsoft/arch/x86/configs/config-wsl* 2>/dev/null || echo "x86 config-wsl not found"
+
+      - name: Clone Linux Mainline RC Kernel
+        run: |
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          echo "Building Linux Mainline RC Kernel: $RC_VERSION"
+          
+          git clone https://github.com/torvalds/linux.git --depth 1 --branch v$RC_VERSION linux-rc || {
+            echo "GitHub clone failed, trying git.kernel.org..."
+            git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git --depth 1 --branch v$RC_VERSION linux-rc
+          }
+          
+          # 复制微软官方配置
+          echo "Copying Microsoft WSL2 config..."
+          cp wsl2-microsoft/arch/x86/configs/config-wsl linux-rc/arch/x86/configs/config-wsl-simple
+          echo "✓ Copied Microsoft config"
+
+      - name: Build Kernel
+        run: |
+          cd linux-rc
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          
+          echo "=== Building Kernel ==="
+          echo "Start time: $(date)"
+          echo "Config: config-wsl-simple (Microsoft official)"
+          echo ""
+          
+          make KCONFIG_CONFIG=arch/x86/configs/config-wsl-simple -j$(nproc)
+          
+          echo ""
+          echo "Build completed: $(date)"
+          cp arch/x86/boot/bzImage ../bzImage-x86_64-simple
+          
+          echo ""
+          echo "=== Kernel Size ==="
+          ls -lh ../bzImage-x86_64-simple
+
+      - name: Generate Kernel Modules
+        run: |
+          cd linux-rc
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          make modules_install INSTALL_MOD_PATH=../modules_install
+          
+          KERNEL_VER=$(ls ../modules_install/lib/modules/ | head -1)
+          mv ../modules_install/lib/modules/$KERNEL_VER ../modules_install/lib/modules/$RC_VERSION-WSL2-SIMPLE+
+          echo "Modules installed: $RC_VERSION-WSL2-SIMPLE+"
+
+      - name: Generate VHDX Addon Package
+        run: |
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          MODULE_VER="$RC_VERSION-WSL2-SIMPLE+"
+          
+          echo "Generating VHDX addon package..."
+          if [ -f ".github/scripts/gen_modules_vhdx.sh" ]; then
+            sudo .github/scripts/gen_modules_vhdx.sh \
+              "$PWD/modules_install/" \
+              "$MODULE_VER" \
+              bzImage-x86_64-addon-simple.vhdx
+          else
+            echo "Creating minimal VHDX..."
+            sudo qemu-img create -f vhdx bzImage-x86_64-addon-simple.vhdx 2G
+          fi
+          
+          ls -lh bzImage-x86_64-addon-simple.vhdx 2>/dev/null || echo "VHDX creation skipped"
+
+      - name: Upload Kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzImage-x86_64-simple-rc-${{ github.event.inputs.rc_version }}
+          path: bzImage-x86_64-simple
+          retention-days: 30
+
+      - name: Upload VHDX Addon
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzImage-x86_64-addon-simple-rc-${{ github.event.inputs.rc_version }}
+          path: bzImage-x86_64-addon-simple.vhdx
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload Build Info
+        run: |
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          
+          cat > build-info.txt << EOF
+          Build Information (Simple/Standard Config)
+          ===========================================
+          Kernel Version: $RC_VERSION
+          Config: Microsoft WSL2 official config
+          Build Time: $(date)
+          
+          Features:
+          - All WSL2 drivers (DXGKRNL, Hyper-V, etc.)
+          - Standard kernel configuration
+          - No custom optimizations
+          
+          This is the standard build using Microsoft's official WSL2 config.
+          EOF
+          
+          cat build-info.txt
+
+      - name: Upload Build Info
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-info-simple-rc-${{ github.event.inputs.rc_version }}
+          path: build-info.txt
+          retention-days: 30
