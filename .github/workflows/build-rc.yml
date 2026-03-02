@@ -1,10 +1,6 @@
 name: Mainline RC Kernel CI Build
 
 # 自动触发已禁用 - 只允许手动触发
-# on:
-#   schedule:
-#     # 每天 UTC 时间 00:00 运行
-#     - cron: '0 0 * * *'
 on:
   workflow_dispatch:
     inputs:
@@ -29,22 +25,18 @@ jobs:
       - name: Get Latest Mainline RC Version
         id: get-rc
         run: |
-          # 如果用户指定了版本，使用指定的版本
           if [ -n "${{ github.event.inputs.rc_version }}" ]; then
             RC_VERSION="${{ github.event.inputs.rc_version }}"
           else
-            # 从 kernel.org 获取最新 RC 版本
             RC_VERSION=$(curl -s https://www.kernel.org/ | grep -oP 'latest/mainline/v\K[0-9]+\.[0-9]+-rc[0-9]+' | head -1)
             if [ -z "$RC_VERSION" ]; then
-              # 备用方法：从 git.kernel.org 获取
               RC_VERSION=$(curl -s https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/refs/ | grep -oP 'refs/heads/\Kv[0-9]+\.[0-9]+-rc[0-9]+' | head -1 | sed 's/^v//')
             fi
             if [ -z "$RC_VERSION" ]; then
               echo "Failed to fetch latest RC version, using fallback"
-              RC_VERSION="6.8-rc5"
+              RC_VERSION="7.0-rc1"
             fi
           fi
-          
           echo "Latest RC Version: $RC_VERSION"
           echo "RC_VERSION=$RC_VERSION" >> $GITHUB_OUTPUT
           echo "RC_TAG=v$RC_VERSION" >> $GITHUB_OUTPUT
@@ -91,78 +83,69 @@ jobs:
         with:
           ref: master
 
-      - name: Download WSL2 Configuration Files
-        run: |
-          echo "Cloning original Nevuly repository for WSL2 configuration files..."
-          git clone https://github.com/Nevuly/WSL2-Linux-Kernel-Rolling.git --depth 1 wsl2-configs
-          echo "Configuration files available:"
-          ls -la wsl2-configs/arch/x86/configs/config-wsl* 2>/dev/null || echo "No x86 configs found"
-          ls -la wsl2-configs/arch/arm64/configs/config-wsl* 2>/dev/null || echo "No arm64 configs found"
-
       - name: Download Linux Mainline RC Kernel
         run: |
           RC_VERSION="${{ needs.get-latest-rc.outputs.rc_version }}"
           echo "Building Linux Mainline RC Kernel: $RC_VERSION"
-          
-          # 克隆官方 mainline 内核仓库
           echo "Cloning Linux Mainline RC $RC_VERSION..."
           git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git --depth 1 --branch v$RC_VERSION linux-rc || {
             echo "Failed to clone from git.kernel.org, trying GitHub mirror..."
             git clone https://github.com/torvalds/linux.git --depth 1 --branch v$RC_VERSION linux-rc
           }
+
+      - name: Download WSL2 Config Files from Microsoft
+        run: |
+          echo "Downloading WSL2 config files from Microsoft/WSL2-Linux-Kernel..."
+          mkdir -p linux-rc/arch/x86/configs linux-rc/arch/arm64/configs
           
-          # 复制 WSL2 配置文件到 RC 内核
-          echo "Copying WSL2 configuration files..."
-          if [ -f "wsl2-configs/arch/x86/configs/config-wsl-x86" ]; then
-            cp wsl2-configs/arch/x86/configs/config-wsl-x86 linux-rc/arch/x86/configs/
-            echo "✓ Copied config-wsl-x86"
+          # Download x86 config
+          curl -sL "https://raw.githubusercontent.com/microsoft/WSL2-Linux-Kernel/linux-6.12/arch/x86/configs/config-wsl" -o linux-rc/arch/x86/configs/config-wsl-x86
+          if [ -f "linux-rc/arch/x86/configs/config-wsl-x86" ] && [ -s "linux-rc/arch/x86/configs/config-wsl-x86" ]; then
+            echo "✓ Downloaded config-wsl-x86"
           else
-            echo "✗ config-wsl-x86 not found!"
+            echo "✗ Failed to download config-wsl-x86"
+            exit 1
           fi
           
-          if [ -f "wsl2-configs/arch/x86/configs/config-wsl-x86-rt" ]; then
-            cp wsl2-configs/arch/x86/configs/config-wsl-x86-rt linux-rc/arch/x86/configs/
-            echo "✓ Copied config-wsl-x86-rt"
+          # Download x86-rt config (use same as x86 for now)
+          cp linux-rc/arch/x86/configs/config-wsl-x86 linux-rc/arch/x86/configs/config-wsl-x86-rt
+          echo "✓ Created config-wsl-x86-rt (copy of config-wsl-x86)"
+          
+          # Download arm64 config
+          curl -sL "https://raw.githubusercontent.com/microsoft/WSL2-Linux-Kernel/linux-6.12/arch/arm64/configs/config-wsl-arm64" -o linux-rc/arch/arm64/configs/config-wsl-arm64
+          if [ -f "linux-rc/arch/arm64/configs/config-wsl-arm64" ] && [ -s "linux-rc/arch/arm64/configs/config-wsl-arm64" ]; then
+            echo "✓ Downloaded config-wsl-arm64"
           else
-            echo "✗ config-wsl-x86-rt not found!"
+            echo "✗ Failed to download config-wsl-arm64"
+            exit 1
           fi
           
-          if [ -f "wsl2-configs/arch/arm64/configs/config-wsl-arm64" ]; then
-            cp wsl2-configs/arch/arm64/configs/config-wsl-arm64 linux-rc/arch/arm64/configs/
-            echo "✓ Copied config-wsl-arm64"
-          else
-            echo "✗ config-wsl-arm64 not found!"
-          fi
+          # Download arm64-rt config (use same as arm64 for now)
+          cp linux-rc/arch/arm64/configs/config-wsl-arm64 linux-rc/arch/arm64/configs/config-wsl-arm64-rt
+          echo "✓ Created config-wsl-arm64-rt (copy of config-wsl-arm64)"
           
-          if [ -f "wsl2-configs/arch/arm64/configs/config-wsl-arm64-rt" ]; then
-            cp wsl2-configs/arch/arm64/configs/config-wsl-arm64-rt linux-rc/arch/arm64/configs/
-            echo "✓ Copied config-wsl-arm64-rt"
-          else
-            echo "✗ config-wsl-arm64-rt not found!"
-          fi
-          
-          echo "Verifying copied files:"
-          ls -la linux-rc/arch/x86/configs/config-wsl* 2>/dev/null || true
-          ls -la linux-rc/arch/arm64/configs/config-wsl* 2>/dev/null || true
+          echo "Config files ready:"
+          ls -la linux-rc/arch/x86/configs/config-wsl*
+          ls -la linux-rc/arch/arm64/configs/config-wsl*
 
       - name: Build WSL2 RC Kernel
         run: |
           cd linux-rc
           if [ ${{ matrix.arch }} == "x86" ]
           then
-          make KCONFIG_CONFIG=arch/x86/configs/config-wsl-x86 -j$(echo `nproc` + 1 | bc)
-          cp arch/x86/boot/bzImage ../${{ matrix.image-name }}
+            make KCONFIG_CONFIG=arch/x86/configs/config-wsl-x86 -j$(echo `nproc` + 1 | bc)
+            cp arch/x86/boot/bzImage ../${{ matrix.image-name }}
           elif [ ${{ matrix.arch }} == "x86-rt" ]
           then
-          make KCONFIG_CONFIG=arch/x86/configs/config-wsl-x86-rt -j$(echo `nproc` + 1 | bc)
-          cp arch/x86/boot/bzImage ../${{ matrix.image-name }}
+            make KCONFIG_CONFIG=arch/x86/configs/config-wsl-x86-rt -j$(echo `nproc` + 1 | bc)
+            cp arch/x86/boot/bzImage ../${{ matrix.image-name }}
           elif [ ${{ matrix.arch }} == "arm64" ]
           then
-          make KCONFIG_CONFIG=arch/arm64/configs/config-wsl-arm64 -j$(echo `nproc` + 1 | bc)
-          cp arch/arm64/boot/Image ../${{ matrix.image-name }}
+            make KCONFIG_CONFIG=arch/arm64/configs/config-wsl-arm64 -j$(echo `nproc` + 1 | bc)
+            cp arch/arm64/boot/Image ../${{ matrix.image-name }}
           else
-          make KCONFIG_CONFIG=arch/arm64/configs/config-wsl-arm64-rt -j$(echo `nproc` + 1 | bc)
-          cp arch/arm64/boot/Image ../${{ matrix.image-name }}
+            make KCONFIG_CONFIG=arch/arm64/configs/config-wsl-arm64-rt -j$(echo `nproc` + 1 | bc)
+            cp arch/arm64/boot/Image ../${{ matrix.image-name }}
           fi
 
       - name: Generate Kernel Modules
@@ -170,12 +153,8 @@ jobs:
           cd linux-rc
           RC_VERSION="${{ needs.get-latest-rc.outputs.rc_version }}"
           mkdir -p ${{ matrix.image-name }}-addon_install && make modules_install INSTALL_MOD_PATH=${{ matrix.image-name }}-addon_install
-          
-          # 获取实际的内核版本字符串
           KERNEL_VER=$(ls lib/modules/ | head -1)
           echo "Kernel version from build: $KERNEL_VER"
-          
-          # 重命名模块目录为 WSL2 RC 格式
           if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "arm64" ]
           then
             mv lib/modules/$KERNEL_VER lib/modules/$RC_VERSION-WSL2-RC+ 2>/dev/null || true
@@ -187,138 +166,34 @@ jobs:
         run: |
           cd linux-rc
           RC_VERSION="${{ needs.get-latest-rc.outputs.rc_version }}"
-          
-          # 确定模块目录路径
           if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "arm64" ]
           then
-          export addon_path=${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RC+/build
-          MODULE_SUFFIX="$RC_VERSION-WSL2-RC+"
+            export addon_path=${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RC+/build
           else
-          export addon_path=${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RT-RC+/build
-          MODULE_SUFFIX="$RC_VERSION-WSL2-RT-RC+"
+            export addon_path=${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RT-RC+/build
           fi
-          
-          echo "Addon path: $addon_path"
-          ls -la ${{ matrix.image-name }}-addon_install/lib/modules/
           mkdir -p $addon_path
           install -Dt "$addon_path" -m644 Makefile Module.symvers System.map vmlinux
           install -Dt "$addon_path/kernel" -m644 kernel/Makefile
           if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "x86-rt" ]
           then
-          install -Dt "$addon_path/arch/x86" -m644 arch/x86/Makefile
+            install -Dt "$addon_path/arch/x86" -m644 arch/x86/Makefile
           else
-          install -Dt "$addon_path/arch/arm64" -m644 arch/arm64/Makefile
+            install -Dt "$addon_path/arch/arm64" -m644 arch/arm64/Makefile
           fi
           cp -t "$addon_path" -a scripts
-          ln -srt "$addon_path" "addon_path/scripts/gdb/vmlinux-gdb.py"
           if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "x86-rt" ]
           then
-          install -Dt "$addon_path/tools/objtool" tools/objtool/objtool
+            install -Dt "$addon_path/tools/objtool" tools/objtool/objtool
           fi
           install -Dt "$addon_path/tools/bpf/resolve_btfids" tools/bpf/resolve_btfids/resolve_btfids
-          cp -t "$addon_path" -a include
-          if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "x86-rt" ]
-          then
-          cp -t "$addon_path/arch/x86" -a arch/x86/include
-          install -Dt "$addon_path/arch/x86/kernel" -m644 arch/x86/kernel/asm-offsets.s
-          else
-          cp -t "$addon_path/arch/arm64" -a arch/arm64/include
-          install -Dt "$addon_path/arch/arm64/kernel" -m644 arch/arm64/kernel/asm-offsets.s
-          mkdir -p "$addon_path/arch/arm"
-          cp -t "$addon_path/arch/arm" -a arch/arm/include
-          fi
-          install -Dt "$addon_path/drivers/md" -m644 drivers/md/*.h
-          install -Dt "$addon_path/net/mac80211" -m644 net/mac80211/*.h
-          install -Dt "$addon_path/drivers/media/i2c" -m644 drivers/media/i2c/msp3400-driver.h
-          install -Dt "$addon_path/drivers/media/usb/dvb-usb" -m644 drivers/media/usb/dvb-usb/*.h
-          install -Dt "$addon_path/drivers/media/dvb-frontends" -m644 drivers/media/dvb-frontends/*.h
-          install -Dt "$addon_path/drivers/media/tuners" -m644 drivers/media/tuners/*.h
-          install -Dt "$addon_path/drivers/iio/common/hid-sensors" -m644 drivers/iio/common/hid-sensors/*.h
-          find . -name 'Kconfig*' -exec install -Dm644 {} "$addon_path/{}" \;
-          export arch
-          if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "x86-rt" ]
-          then
-          for arch in "$addon_path"/arch/*/; do
-            [[ $arch = */x86/ ]] && continue
-            echo "Removing $(basename "$arch")"
-            rm -r "$arch"
-          done
-          else
-          for arch in "$addon_path"/arch/*/; do
-            [[ $arch = */arm64/ ]] && continue
-            echo "Removing $(basename "$arch")"
-            rm -r "$arch"
-          done
-          fi
-          rm -r $addon_path/Documentation
-          find -L "$addon_path" -type l -printf 'Removing %P\n' -delete
-          find -L "$addon_path" -type f -name '*.o' -printf 'Removing %P\n' -delete
-          export file
-          export STRIP_SHARED
-          export STRIP_STATIC
-          export STRIP_BINARIES
-          while read -rd '' $file; do
-            case "$(file -Sib "$file")" in
-              application/x-sharedlib\;*)
-                strip -v $STRIP_SHARED $file ;;
-              application/x-archive\;*)
-                strip -v $STRIP_STATIC $file ;;
-              application/x-executable\;*)
-                strip -v $STRIP_BINARIES $file ;;
-              application/x-pie-executable\;*)
-                strip -v $STRIP_SHARED $file ;;
-            esac
-          done < <(find "$addon_path" -type f -perm -u+x ! -name vmlinux -print0)
-          if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "x86-rt" ]
-          then
-          strip -v $STRIP_STATIC "$addon_path/vmlinux"
-          fi
-          cp -r Documentation $addon_path/Documentation
-          if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "arm64" ]
-          then
-          rm -rf ${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RC+/build/${{ matrix.image-name }}-addon_install
-          else
-          rm -rf ${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RT-RC+/build/${{ matrix.image-name }}-addon_install
-          fi
-
-      - name: Download ZFS
-        if: ${{ github.event.inputs.build_zfs == 'true' }}
-        run: |
-          git clone https://github.com/openzfs/zfs.git --depth 1 zfs
-
-      - name: Build ZFS
-        if: ${{ github.event.inputs.build_zfs == 'true' }}
-        run: |
-          cd zfs
-          ./autogen.sh
-          ./configure --with-linux="$(pwd)/../linux-rc" --with-linux-obj="$(pwd)/../linux-rc"
-          make -j$(echo `nproc` + 1 | bc)
-
-      - name: Generate ZFS Kernel Module
-        if: ${{ github.event.inputs.build_zfs == 'true' }}
-        run: |
-          RC_VERSION="${{ needs.get-latest-rc.outputs.rc_version }}"
-          if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "arm64" ]
-          then
-          mkdir -p linux-rc/${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RC+/extra
-          find zfs/module -name "*.ko" -exec cp {} linux-rc/${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RC+/extra \;
-          else
-          mkdir -p linux-rc/${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RT-RC+/extra
-          find zfs/module -name "*.ko" -exec cp {} linux-rc/${{ matrix.image-name }}-addon_install/lib/modules/$RC_VERSION-WSL2-RT-RC+/extra \;
-          fi
 
       - name: Generate Kernel Addon Package
         run: |
-          RC_VERSION="${{ needs.get-latest-rc.outputs.rc_version }}"
           cd linux-rc
-          if [ ${{ matrix.arch }} == "x86" ] || [ ${{ matrix.arch }} == "arm64" ]
-          then
-          MODULE_VER="$RC_VERSION-WSL2-RC+"
-          else
-          MODULE_VER="$RC_VERSION-WSL2-RT-RC+"
-          fi
+          MODULE_VER="${{ needs.get-latest-rc.outputs.rc_version }}"
           echo "Generating VHDX for version: $MODULE_VER"
-          ls -la ${{ matrix.image-name }}-addon_install/lib/modules/
+          chmod +x ../.github/scripts/gen_modules_vhdx.sh
           sudo ../.github/scripts/gen_modules_vhdx.sh "$PWD/${{ matrix.image-name }}-addon_install/" "$MODULE_VER" ${{ matrix.image-name }}-addon.vhdx
           mv ${{ matrix.image-name }}-addon.vhdx ../
 
@@ -327,27 +202,27 @@ jobs:
         run: |
           if [ ${{ matrix.arch }} == "x86" ]
           then
-          read -r x86ImageSHA rest <<< "$(sha256sum ${{ matrix.image-name }})"
-          read -r x86AddonSHA rest <<< "$(sha256sum ${{ matrix.image-name }}-addon.vhdx)"
-          echo "X86_IMAGE_SHA=$x86ImageSHA" >> $GITHUB_OUTPUT
-          echo "X86_ADDON_SHA=$x86AddonSHA" >> $GITHUB_OUTPUT
+            read -r x86ImageSHA rest <<< "$(sha256sum ${{ matrix.image-name }})"
+            read -r x86AddonSHA rest <<< "$(sha256sum ${{ matrix.image-name }}-addon.vhdx)"
+            echo "X86_IMAGE_SHA=$x86ImageSHA" >> $GITHUB_OUTPUT
+            echo "X86_ADDON_SHA=$x86AddonSHA" >> $GITHUB_OUTPUT
           elif [ ${{ matrix.arch }} == "x86-rt" ]
           then
-          read -r x86RTImageSHA rest <<< "$(sha256sum ${{ matrix.image-name }})"
-          read -r x86RTAddonSHA rest <<< "$(sha256sum ${{ matrix.image-name }}-addon.vhdx)"
-          echo "X86_RT_IMAGE_SHA=$x86RTImageSHA" >> $GITHUB_OUTPUT
-          echo "X86_RT_ADDON_SHA=$x86RTAddonSHA" >> $GITHUB_OUTPUT
+            read -r x86RTImageSHA rest <<< "$(sha256sum ${{ matrix.image-name }})"
+            read -r x86RTAddonSHA rest <<< "$(sha256sum ${{ matrix.image-name }}-addon.vhdx)"
+            echo "X86_RT_IMAGE_SHA=$x86RTImageSHA" >> $GITHUB_OUTPUT
+            echo "X86_RT_ADDON_SHA=$x86RTAddonSHA" >> $GITHUB_OUTPUT
           elif [ ${{ matrix.arch }} == "arm64" ]
           then
-          read -r arm64ImageSHA rest <<< "$(sha256sum ${{ matrix.image-name }})"
-          read -r arm64AddonSHA rest <<< "$(sha256sum ${{ matrix.image-name }}-addon.vhdx)"
-          echo "ARM64_IMAGE_SHA=$arm64ImageSHA" >> $GITHUB_OUTPUT
-          echo "ARM64_ADDON_SHA=$arm64AddonSHA" >> $GITHUB_OUTPUT
+            read -r arm64ImageSHA rest <<< "$(sha256sum ${{ matrix.image-name }})"
+            read -r arm64AddonSHA rest <<< "$(sha256sum ${{ matrix.image-name }}-addon.vhdx)"
+            echo "ARM64_IMAGE_SHA=$arm64ImageSHA" >> $GITHUB_OUTPUT
+            echo "ARM64_ADDON_SHA=$arm64AddonSHA" >> $GITHUB_OUTPUT
           else
-          read -r arm64RTImageSHA rest <<< "$(sha256sum ${{ matrix.image-name }})"
-          read -r arm64RTAddonSHA rest <<< "$(sha256sum ${{ matrix.image-name }}-addon.vhdx)"
-          echo "ARM64_RT_IMAGE_SHA=$arm64RTImageSHA" >> $GITHUB_OUTPUT
-          echo "ARM64_RT_ADDON_SHA=$arm64RTAddonSHA" >> $GITHUB_OUTPUT
+            read -r arm64RTImageSHA rest <<< "$(sha256sum ${{ matrix.image-name }})"
+            read -r arm64RTAddonSHA rest <<< "$(sha256sum ${{ matrix.image-name }}-addon.vhdx)"
+            echo "ARM64_RT_IMAGE_SHA=$arm64RTImageSHA" >> $GITHUB_OUTPUT
+            echo "ARM64_RT_ADDON_SHA=$arm64RTAddonSHA" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload Kernel Images

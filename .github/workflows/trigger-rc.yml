@@ -40,8 +40,13 @@ jobs:
             fi
             
             if [ -z "$RC_VERSION" ]; then
-              echo "::warning::Failed to fetch RC version, using fallback"
-              RC_VERSION="6.8-rc5"
+              echo "::warning::Failed to fetch RC version from kernel.org, trying git.kernel.org..."
+              RC_VERSION=$(curl -s https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/refs/ | grep -oP 'refs/heads/\Kv[0-9]+\.[0-9]+-rc[0-9]+' | head -1 | sed 's/^v//')
+            fi
+            
+            if [ -z "$RC_VERSION" ]; then
+              echo "::warning::Failed to fetch from git.kernel.org, using fallback"
+              RC_VERSION="7.0-rc1"
             fi
             
             echo "Latest RC Version: $RC_VERSION"
