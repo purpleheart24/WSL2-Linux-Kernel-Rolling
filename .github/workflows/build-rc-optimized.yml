@@ -1,0 +1,222 @@
+name: Mainline RC Kernel CI Build (Performance Optimized)
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_version:
+        description: 'RC version to build (e.g., 7.0-rc1)'
+        required: true
+        default: '7.0-rc1'
+      optimization_level:
+        description: 'Optimization level (O3, Ofast, or native)'
+        required: false
+        default: 'O3'
+        type: choice
+        options:
+          - O3
+          - Ofast
+          - native
+
+jobs:
+  build-x86-optimized:
+    name: Build x86_64 RC Kernel (Optimized for Intel 258V)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            bc \
+            kmod \
+            cpio \
+            xz-utils \
+            rsync \
+            qemu-utils \
+            git \
+            curl \
+            clang \
+            lld \
+            llvm
+
+      - name: Clone Microsoft WSL2 Kernel (for configs)
+        run: |
+          echo "Cloning Microsoft WSL2 kernel for WSL2 configs..."
+          git clone https://github.com/microsoft/WSL2-Linux-Kernel.git --depth 1 --branch linux-msft-wsl-6.1.y wsl2-microsoft
+          echo "Available config files:"
+          ls -la wsl2-microsoft/arch/x86/configs/ | grep wsl || echo "No wsl configs found"
+
+      - name: Clone Linux Mainline RC Kernel
+        run: |
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          echo "Building Linux Mainline RC Kernel: $RC_VERSION"
+          
+          git clone https://github.com/torvalds/linux.git --depth 1 --branch v$RC_VERSION linux-rc || {
+            echo "GitHub clone failed, trying git.kernel.org..."
+            git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git --depth 1 --branch v$RC_VERSION linux-rc
+          }
+          
+          # 复制优化的配置文件
+          echo "Copying optimized config for Intel 258V..."
+          if [ -f "config-wsl-258v-optimized" ]; then
+            cp config-wsl-258v-optimized linux-rc/arch/x86/configs/config-wsl-258v-optimized
+            echo "✓ Copied optimized config"
+          else
+            # 使用微软配置作为基础
+            cp wsl2-microsoft/arch/x86/configs/config-wsl linux-rc/arch/x86/configs/config-wsl-258v-optimized
+            echo "✓ Using Microsoft config as base"
+          fi
+
+      - name: Configure Performance Optimization
+        run: |
+          cd linux-rc
+          OPT_LEVEL="${{ github.event.inputs.optimization_level }}"
+          
+          echo "=== Performance Optimization Settings ==="
+          echo "Optimization Level: $OPT_LEVEL"
+          echo "Target CPU: Intel Core Ultra 258V (Lunar Lake)"
+          echo ""
+          
+          # 设置编译器优化标志
+          case $OPT_LEVEL in
+            "Ofast")
+              echo "Using -Ofast optimization (most aggressive)"
+              export CFLAGS="-Ofast -march=alderlake -mtune=intel -flto=thin -fuse-ld=lld"
+              export LDFLAGS="-Ofast -flto=thin -fuse-ld=lld"
+              ;;
+            "native")
+              echo "Using -O3 -march=native optimization"
+              export CFLAGS="-O3 -march=native -flto=thin -fuse-ld=lld"
+              export LDFLAGS="-O3 -flto=thin -fuse-ld=lld"
+              ;;
+            *)
+              echo "Using -O3 optimization (recommended)"
+              export CFLAGS="-O3 -march=alderlake -mtune=intel -flto=thin -fuse-ld=lld"
+              export LDFLAGS="-O3 -flto=thin -fuse-ld=lld"
+              ;;
+          esac
+          
+          echo "CFLAGS: $CFLAGS"
+          echo "LDFLAGS: $LDFLAGS"
+          
+          # 启用 LTO 配置
+          echo ""
+          echo "=== LTO Configuration ==="
+          echo "CONFIG_LTO_CLANG=y" >> arch/x86/configs/config-wsl-258v-optimized
+          echo "CONFIG_LTO_CLANG_THIN=y" >> arch/x86/configs/config-wsl-258v-optimized
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> arch/x86/configs/config-wsl-258v-optimized
+          echo "CONFIG_HZ_1000=y" >> arch/x86/configs/config-wsl-258v-optimized
+          echo "CONFIG_PREEMPT_VOLUNTARY=y" >> arch/x86/configs/config-wsl-258v-optimized
+          
+          # 禁用 AVX-512
+          echo ""
+          echo "=== Disabling AVX-512 (not supported on 258V) ==="
+          echo "# CONFIG_X86_5LEVEL is not set" >> arch/x86/configs/config-wsl-258v-optimized
+          echo "# CONFIG_AVX512F is not set" >> arch/x86/configs/config-wsl-258v-optimized
+          echo "# CONFIG_AVX512_VL is not set" >> arch/x86/configs/config-wsl-258v-optimized
+          
+          echo "Configuration complete!"
+
+      - name: Build Optimized Kernel
+        run: |
+          cd linux-rc
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          
+          echo "=== Building Optimized Kernel ==="
+          echo "Start time: $(date)"
+          echo ""
+          
+          # 使用优化的配置编译
+          make KCONFIG_CONFIG=arch/x86/configs/config-wsl-258v-optimized -j$(nproc)
+          
+          echo ""
+          echo "Build completed: $(date)"
+          cp arch/x86/boot/bzImage ../bzImage-x86_64-optimized
+          
+          echo ""
+          echo "=== Kernel Size ==="
+          ls -lh ../bzImage-x86_64-optimized
+
+      - name: Generate Kernel Modules
+        run: |
+          cd linux-rc
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          make modules_install INSTALL_MOD_PATH=../modules_install
+          
+          KERNEL_VER=$(ls ../modules_install/lib/modules/ | head -1)
+          mv ../modules_install/lib/modules/$KERNEL_VER ../modules_install/lib/modules/$RC_VERSION-WSL2-RC-OPT+
+          echo "Modules installed: $RC_VERSION-WSL2-RC-OPT+"
+
+      - name: Generate VHDX Addon Package
+        run: |
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          MODULE_VER="$RC_VERSION-WSL2-RC-OPT+"
+          
+          echo "Generating VHDX addon package..."
+          if [ -f ".github/scripts/gen_modules_vhdx.sh" ]; then
+            sudo .github/scripts/gen_modules_vhdx.sh \
+              "$PWD/modules_install/" \
+              "$MODULE_VER" \
+              bzImage-x86_64-addon-optimized.vhdx
+          else
+            echo "Creating minimal VHDX..."
+            sudo qemu-img create -f vhdx bzImage-x86_64-addon-optimized.vhdx 2G
+          fi
+          
+          ls -lh bzImage-x86_64-addon-optimized.vhdx 2>/dev/null || echo "VHDX creation skipped"
+
+      - name: Upload Optimized Kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzImage-x86_64-optimized-rc-${{ github.event.inputs.rc_version }}
+          path: bzImage-x86_64-optimized
+          retention-days: 30
+
+      - name: Upload VHDX Addon (Optimized)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzImage-x86_64-addon-optimized-rc-${{ github.event.inputs.rc_version }}
+          path: bzImage-x86_64-addon-optimized.vhdx
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload Build Info
+        run: |
+          RC_VERSION="${{ github.event.inputs.rc_version }}"
+          OPT_LEVEL="${{ github.event.inputs.optimization_level }}"
+          
+          cat > build-info.txt << EOF
+          Build Information
+          =================
+          Kernel Version: $RC_VERSION
+          Optimization: $OPT_LEVEL
+          Target CPU: Intel Core Ultra 258V (Lunar Lake)
+          Build Time: $(date)
+          
+          Optimization Flags:
+          - CFLAGS: -O$OPT_LEVEL -march=alderlake -mtune=intel -flto=thin
+          - LTO: Thin LTO with Clang
+          - Timer HZ: 1000
+          - Preempt: Voluntary
+          
+          Disabled Features:
+          - AVX-512 (not supported on 258V)
+          - 5-level page tables (not supported on 258V)
+          EOF
+          
+          cat build-info.txt
+
+      - name: Upload Build Info
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-info-optimized-rc-${{ github.event.inputs.rc_version }}
+          path: build-info.txt
+          retention-days: 30
